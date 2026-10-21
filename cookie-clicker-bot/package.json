@@ -1,0 +1,21 @@
+{
+  "name": "cookie-clicker-bot",
+  "version": "1.0.0",
+  "description": "Appium бот для Cookie Clicker на Android",
+  "scripts": {
+    "test": "wdio run ./wdio.conf.ts",
+    "test:100": "wdio run ./wdio.conf.ts --mochaOpts.grep '100 раз'",
+    "test:infinite": "wdio run ./wdio.conf.ts --mochaOpts.grep 'бесконечно'"
+  },
+  "devDependencies": {
+    "@wdio/cli": "^8.29.0",
+    "@wdio/local-runner": "^8.29.0",
+    "@wdio/mocha-framework": "^8.29.0",
+    "@wdio/spec-reporter": "^8.29.0",
+    "appium": "^2.5.0",
+    "appium-uiautomator2-driver": "^3.5.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3",
+    "webdriverio": "^8.29.0"
+  }
+}

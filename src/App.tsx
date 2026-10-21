@@ -1,25 +1,46 @@
 import { useState } from 'react';
 
-type Tab = 'test' | 'page-object' | 'config' | 'setup' | 'run';
+type Step = 'setup' | 'config' | 'test' | 'run';
 
-const codeSnippets: Record<Tab, string> = {
+const codeSnippets: Record<Step, string> = {
   run: '',
   setup: `# 1. Установить Node.js (v18+)
 # https://nodejs.org
 
-# 2. Установить Appium глобально
+# 2. Установить Appium
 npm install -g appium
 
 # 3. Установить драйвер для Android
 appium driver install uiautomator2
 
-# 4. Проверить
-appium --version
-appium driver list --installed
+# 4. Создать проект
+mkdir cookie-clicker-bot && cd cookie-clicker-bot
+npm init -y
 
-# 5. Запустить Appium сервер
-appium
-# → Appium REST http interface listener started on 0.0.0.0:4723`,
+# 5. Установить зависимости
+npm install --save-dev webdriverio @wdio/cli typescript ts-node
+
+# 6. Подключить реальное устройство
+#    - Включить "Режим разработчика" на телефоне
+#    - Включить "Отладка по USB"
+#    - Подключить USB кабель
+#    - Разрешить отладку на телефоне
+
+# 7. Проверить подключение
+adb devices
+# Должно показать: XXXXXXXX  device
+
+# 8. Узнать имя устройства (для конфига)
+adb shell getprop ro.product.model
+# Например: SM-A525F
+
+# 9. Установить Cookie Clicker на устройство
+adb install cookie-clicker.apk
+
+# 10. Узнать package name и activity игры
+adb shell dumpsys package com.optcookie.CookieClicker | grep -A 5 "android.intent.action.MAIN"
+# Или просто:
+adb shell pm list packages | grep cookie`,
 
   config: `// wdio.conf.ts
 import type { Options } from '@wdio/types';
@@ -31,295 +52,254 @@ export const config: Options.WebdriverIO = {
   path: '/',
 
   // Тестовые файлы
-  specs: ['./tests/**/*.spec.ts'],
+  specs: ['./tests/clicker.spec.ts'],
   framework: 'mocha',
 
   mochaOpts: {
     ui: 'bdd',
-    timeout: 60_000,
+    timeout: 300_000, // 5 минут на тест
   },
 
-  // ⚡ Desired Capabilities для Android
+  // ⚡ Desired Capabilities для реального устройства
   capabilities: [{
     platformName: 'Android',
     'appium:automationName': 'UiAutomator2',
-    'appium:deviceName': 'emulator-5554',
-    'appium:platformVersion': '14.0',
-    'appium:app': './apps/my-app.apk',
-    'appium:appPackage': 'com.example.myapp',
-    'appium:appActivity': '.MainActivity',
+    'appium:deviceName': 'SM-A525F', // ← имя вашего устройства (adb shell getprop ro.product.model)
+    'appium:udid': 'XXXXXXXX',       // ← серийный номер (adb devices)
+    'appium:appPackage': 'com.optcookie.CookieClicker',
+    'appium:appActivity': 'com.optcookie.CookieClicker.MainActivity',
+    'appium:noReset': true,           // не сбрасывать прогресс игры
+    'appium:dontStopAppOnReset': true,
     'appium:autoGrantPermissions': true,
-    'appium:noReset': false,
-    'appium:newCommandTimeout': 240,
+    'appium:newCommandTimeout': 300,
   }],
 
   reporters: ['spec'],
-
-  // Скриншот при падении
-  afterTest: async function (_, __, { error }) {
-    if (error) {
-      await browser.saveScreenshot(
-        \`./screenshots/error-\${Date.now()}.png\`
-      );
-    }
-  },
-
   logLevel: 'info',
   waitforTimeout: 10_000,
   connectionRetryTimeout: 120_000,
   connectionRetryCount: 3,
 };`,
 
-  'page-object': `// src/pages/LoginPage.ts
-import { ChainablePromiseElement } from 'webdriverio';
+  test: `// tests/clicker.spec.ts
+import { remote } from 'webdriverio';
 
-class LoginPage {
-  // === Локаторы ===
-  // Используем accessibility-id (contentDescription в Android)
-  private get usernameInput()  { return $('~username-input'); }
-  private get passwordInput()  { return $('~password-input'); }
-  private get loginButton()    { return $('~login-button'); }
-  private get errorMessage()   { return $('~error-message'); }
-  private get progressBar()    { return $('~progress-bar'); }
-
-  // Также можно искать по resource-id:
-  // private get usernameInput() {
-  //   return $('android=new UiSelector().resourceId("com.example.myapp:id/username")');
-  // }
-
-  // === Действия ===
-  async open() {
-    // Если app не указан в capabilities — запускаем вручную
-    await driver.activateApp('com.example.myapp');
-  }
-
-  async login(username: string, password: string) {
-    await this.usernameInput.waitForDisplayed({ timeout: 10_000 });
-    await this.usernameInput.setValue(username);
-    await this.passwordInput.setValue(password);
-    await this.loginButton.click();
-  }
-
-  async waitForLoading() {
-    await this.progressBar.waitForDisplayed({ timeout: 5_000 });
-    await this.progressBar.waitForDisplayed({ 
-      timeout: 15_000, 
-      reverse: true  // ждём пока исчезнет
-    });
-  }
-
-  // === Проверки ===
-  async getErrorMessage(): Promise<string> {
-    await this.errorMessage.waitForDisplayed();
-    return this.errorMessage.getText();
-  }
-
-  async isLoginFormDisplayed(): Promise<boolean> {
-    return this.usernameInput.isDisplayed();
-  }
-}
-
-export default new LoginPage();`,
-
-  test: `// tests/login.spec.ts
-import loginPage from '../src/pages/LoginPage';
-
-describe('🔐 Авторизация', () => {
+describe('🍪 Cookie Clicker Bot', () => {
+  let driver: WebdriverIO.Browser;
 
   before(async () => {
-    // Перед всеми тестами — открываем приложение
-    await loginPage.open();
+    // Подключаемся к Appium серверу
+    driver = await remote({
+      hostname: '127.0.0.1',
+      port: 4723,
+      capabilities: {
+        platformName: 'Android',
+        'appium:automationName': 'UiAutomator2',
+        'appium:deviceName': 'SM-A525F',
+        'appium:udid': 'XXXXXXXX', // ← ваш UDID
+        'appium:appPackage': 'com.optcookie.CookieClicker',
+        'appium:appActivity': 'com.optcookie.CookieClicker.MainActivity',
+        'appium:noReset': true,
+        'appium:newCommandTimeout': 300,
+      }
+    });
   });
 
-  beforeEach(async () => {
-    // Перед каждым тестом — перезапускаем активность
-    await driver.reset();
+  after(async () => {
+    // Закрываем сессию
+    await driver.deleteSession();
   });
 
-  it('✅ должен войти с валидными данными', async () => {
-    // Act
-    await loginPage.login('testuser@mail.com', 'Password123!');
-    await loginPage.waitForLoading();
+  it('🍪 должен кликать в центр экрана 100 раз', async () => {
+    // Запускаем игру (если ещё не запущена)
+    await driver.activateApp('com.optcookie.CookieClicker');
+    
+    // Ждём пока игра загрузится
+    await driver.pause(3000);
 
-    // Assert — проверяем что попали на главный экран
-    const homeScreen = await $('~home-screen');
-    await expect(homeScreen).toBeDisplayed();
+    // Получаем размеры экрана
+    const { width, height } = await driver.getWindowSize();
+    console.log(\`📱 Размер экрана: \${width}x\${height}\`);
 
-    // Проверяем текст приветствия
-    const greeting = await $('~greeting-text');
-    await expect(greeting).toHaveText('Привет, Тест!');
-  });
+    // Центр экрана
+    const centerX = Math.floor(width / 2);
+    const centerY = Math.floor(height / 2);
+    console.log(\`🎯 Кликаем в центр: (\${centerX}, \${centerY})\`);
 
-  it('❌ должен показать ошибку при неверном пароле', async () => {
-    // Act
-    await loginPage.login('testuser@mail.com', 'wrongpassword');
+    // Кликаем 100 раз
+    const clicksCount = 100;
+    for (let i = 0; i < clicksCount; i++) {
+      // Кликаем в центр экрана
+      await driver.touchAction([
+        { action: 'tap', x: centerX, y: centerY }
+      ]);
 
-    // Assert
-    const error = await loginPage.getErrorMessage();
-    expect(error).toContain('Неверный логин или пароль');
-  });
+      // Небольшая пауза между кликами (100мс)
+      await driver.pause(100);
 
-  it('❌ должен показать ошибку при пустых полях', async () => {
-    // Act — просто нажимаем кнопку входа
-    const loginBtn = await $('~login-button');
-    await loginBtn.click();
-
-    // Assert
-    const error = await loginPage.getErrorMessage();
-    expect(error).toContain('Заполните все поля');
-  });
-
-  it('🔒 должен блокировать после 5 неверных попыток', async () => {
-    // Act — 5 раз вводим неверный пароль
-    for (let i = 0; i < 5; i++) {
-      await loginPage.login('testuser@mail.com', 'wrong');
-      await driver.reset();
-      await loginPage.open();
+      // Логируем прогресс каждые 10 кликов
+      if ((i + 1) % 10 === 0) {
+        console.log(\`✅ Клик \${i + 1}/\${clicksCount}\`);
+      }
     }
 
-    // 6-я попытка
-    await loginPage.login('testuser@mail.com', 'Password123!');
+    console.log(\`🎉 Готово! Сделано \${clicksCount} кликов\`);
+  });
 
-    // Assert — аккаунт заблокирован
-    const error = await loginPage.getErrorMessage();
-    expect(error).toContain('Аккаунт заблокирован');
-    
-    const lockIcon = await $('~lock-icon');
-    await expect(lockIcon).toBeDisplayed();
+  it('🍪 должен кликать бесконечно (до остановки)', async () => {
+    await driver.activateApp('com.optcookie.CookieClicker');
+    await driver.pause(3000);
+
+    const { width, height } = await driver.getWindowSize();
+    const centerX = Math.floor(width / 2);
+    const centerY = Math.floor(height / 2);
+
+    let clickCount = 0;
+    const startTime = Date.now();
+
+    console.log('🚀 Начинаем бесконечный кликер...');
+    console.log('⏹️  Остановить: Ctrl+C');
+
+    // Кликаем пока не остановим
+    while (true) {
+      await driver.touchAction([
+        { action: 'tap', x: centerX, y: centerY }
+      ]);
+
+      clickCount++;
+      await driver.pause(50); // 50мс между кликами = 20 кликов/сек
+
+      // Логируем каждые 100 кликов
+      if (clickCount % 100 === 0) {
+        const elapsed = (Date.now() - startTime) / 1000;
+        const cps = (clickCount / elapsed).toFixed(1);
+        console.log(\`🍪 Кликов: \${clickCount} | Время: \${elapsed.toFixed(1)}с | CPS: \${cps}\`);
+      }
+    }
   });
 });`,
 };
 
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('setup');
+  const [activeStep, setActiveStep] = useState<Step>('setup');
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(codeSnippets[activeTab]);
+    await navigator.clipboard.writeText(codeSnippets[activeStep]);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const tabs: { id: Tab; label: string; icon: string }[] = [
-    { id: 'setup', label: 'Установка', icon: '⚙️' },
-    { id: 'config', label: 'Конфиг', icon: '🔧' },
-    { id: 'page-object', label: 'Page Object', icon: '📄' },
-    { id: 'test', label: 'Тест', icon: '🧪' },
-    { id: 'run', label: 'Запуск', icon: '▶️' },
+  const steps: { id: Step; label: string; icon: string; desc: string }[] = [
+    { id: 'setup', label: 'Установка', icon: '⚙️', desc: 'Appium + подключение устройства' },
+    { id: 'config', label: 'Конфиг', icon: '🔧', desc: 'Desired Capabilities' },
+    { id: 'test', label: 'Тест', icon: '🍪', desc: 'Клик в центр экрана' },
+    { id: 'run', label: 'Запуск', icon: '▶️', desc: 'Команды для запуска' },
   ];
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       {/* Header */}
       <header className="border-b border-gray-800 bg-gray-950/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-6 py-5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-gradient-to-br from-green-500 to-emerald-600 rounded-xl flex items-center justify-center text-2xl shadow-lg shadow-green-600/20">
-                🤖
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-white">
-                  Appium × Android
-                </h1>
-                <p className="text-sm text-gray-500">
-                  Автотест мобильного приложения • WebdriverIO + TypeScript
-                </p>
-              </div>
+        <div className="max-w-5xl mx-auto px-6 py-5">
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 bg-gradient-to-br from-amber-500 to-orange-600 rounded-2xl flex items-center justify-center text-3xl shadow-lg shadow-orange-600/20">
+              🍪
             </div>
-            <div className="hidden md:flex items-center gap-2 text-xs text-gray-500">
-              <span className="px-2 py-1 bg-green-900/30 text-green-400 rounded-md border border-green-800/50">Android</span>
-              <span className="px-2 py-1 bg-blue-900/30 text-blue-400 rounded-md border border-blue-800/50">UiAutomator2</span>
-              <span className="px-2 py-1 bg-yellow-900/30 text-yellow-400 rounded-md border border-yellow-800/50">TypeScript</span>
+            <div>
+              <h1 className="text-2xl font-bold text-white">
+                Cookie Clicker Bot
+              </h1>
+              <p className="text-sm text-gray-500">
+                Автотест: кликаем в центр экрана на реальном Android устройстве
+              </p>
             </div>
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        {/* Steps indicator */}
-        <div className="flex items-center gap-2 mb-8 overflow-x-auto pb-2">
-          {tabs.map((tab, i) => (
+      <main className="max-w-5xl mx-auto px-6 py-8">
+        {/* Steps */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+          {steps.map((step, i) => (
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${
-                activeTab === tab.id
-                  ? 'bg-green-600 text-white shadow-lg shadow-green-600/20'
+              key={step.id}
+              onClick={() => setActiveStep(step.id)}
+              className={`flex flex-col items-start p-4 rounded-xl text-left transition-all ${
+                activeStep === step.id
+                  ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/20'
                   : 'bg-gray-800/50 text-gray-400 hover:bg-gray-800 hover:text-gray-200'
               }`}
             >
-              <span className="text-base">{tab.icon}</span>
-              <span className="hidden sm:inline">{tab.label}</span>
-              {i < tabs.length - 1 && (
-                <span className="text-gray-600 ml-1 hidden sm:inline">→</span>
-              )}
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xl">{step.icon}</span>
+                <span className="text-xs font-bold opacity-60">Шаг {i + 1}</span>
+              </div>
+              <div className="font-semibold text-sm">{step.label}</div>
+              <div className="text-xs opacity-70 mt-1">{step.desc}</div>
             </button>
           ))}
         </div>
 
         {/* Content */}
-        {activeTab === 'setup' && <SetupSection />}
-        {activeTab === 'config' && <ConfigSection />}
-        {activeTab === 'page-object' && <PageObjectSection />}
-        {activeTab === 'test' && <TestSection />}
-        {activeTab === 'run' && <RunSection />}
+        {activeStep === 'setup' && <SetupSection />}
+        {activeStep === 'config' && <ConfigSection />}
+        {activeStep === 'test' && <TestSection />}
+        {activeStep === 'run' && <RunSection />}
 
         {/* Code block */}
-        {activeTab !== 'run' && (
-          <div className="mt-6">
-            <div className="relative rounded-xl overflow-hidden border border-gray-800">
-              {/* Code header */}
-              <div className="flex items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-800">
-                <div className="flex items-center gap-3">
-                  <div className="flex gap-1.5">
-                    <div className="w-3 h-3 rounded-full bg-red-500/70" />
-                    <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
-                    <div className="w-3 h-3 rounded-full bg-green-500/70" />
-                  </div>
-                  <span className="text-xs text-gray-500 font-mono">
-                    {activeTab === 'setup' && 'terminal'}
-                    {activeTab === 'config' && 'wdio.conf.ts'}
-                    {activeTab === 'page-object' && 'src/pages/LoginPage.ts'}
-                    {activeTab === 'test' && 'tests/login.spec.ts'}
-                  </span>
+        <div className="mt-6">
+          <div className="relative rounded-xl overflow-hidden border border-gray-800">
+            {/* Code header */}
+            <div className="flex items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-800">
+              <div className="flex items-center gap-3">
+                <div className="flex gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-red-500/70" />
+                  <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
+                  <div className="w-3 h-3 rounded-full bg-green-500/70" />
                 </div>
-                <button
-                  onClick={handleCopy}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
-                >
-                  {copied ? (
-                    <>
-                      <CheckIcon /> Скопировано!
-                    </>
-                  ) : (
-                    <>
-                      <CopyIcon /> Копировать
-                    </>
-                  )}
-                </button>
+                <span className="text-xs text-gray-500 font-mono">
+                  {activeStep === 'setup' && 'terminal'}
+                  {activeStep === 'config' && 'wdio.conf.ts'}
+                  {activeStep === 'test' && 'tests/clicker.spec.ts'}
+                  {activeStep === 'run' && 'commands'}
+                </span>
               </div>
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                {copied ? (
+                  <>
+                    <CheckIcon /> Скопировано!
+                  </>
+                ) : (
+                  <>
+                    <CopyIcon /> Копировать
+                  </>
+                )}
+              </button>
+            </div>
 
-              {/* Code content */}
-              <div className="overflow-x-auto">
-                <pre className="p-5 text-sm leading-relaxed">
-                  <code className="text-gray-300 font-mono">
-                    {codeSnippets[activeTab].split('\n').map((line, i) => (
-                      <div key={i} className="flex">
-                        <span className="inline-block w-8 text-right mr-5 text-gray-700 select-none text-xs">
-                          {i + 1}
-                        </span>
-                        <span className="flex-1">
-                          <CodeLine line={line} isBash={activeTab === 'setup'} />
-                        </span>
-                      </div>
-                    ))}
-                  </code>
-                </pre>
-              </div>
+            {/* Code content */}
+            <div className="overflow-x-auto">
+              <pre className="p-5 text-sm leading-relaxed">
+                <code className="text-gray-300 font-mono">
+                  {codeSnippets[activeStep].split('\n').map((line, i) => (
+                    <div key={i} className="flex">
+                      <span className="inline-block w-8 text-right mr-5 text-gray-700 select-none text-xs">
+                        {i + 1}
+                      </span>
+                      <span className="flex-1">
+                        <CodeLine line={line} isBash={activeStep === 'setup'} />
+                      </span>
+                    </div>
+                  ))}
+                </code>
+              </pre>
             </div>
           </div>
-        )}
+        </div>
       </main>
     </div>
   );
@@ -329,46 +309,47 @@ function SetupSection() {
   return (
     <div className="space-y-6">
       <InfoCard
-        title="Что нужно для старта"
+        title="Что нужно"
         items={[
-          { icon: '📱', text: 'Android эмулятор или реальное устройство' },
-          { icon: '☕', text: 'Java JDK 17+ (для Android SDK)' },
-          { icon: '📦', text: 'Android SDK (через Android Studio)' },
-          { icon: '🟢', text: 'Node.js 18+ (для Appium и WebdriverIO)' },
-          { icon: '🤖', text: 'APK файл тестируемого приложения' },
+          { icon: '📱', text: 'Реальное Android устройство с USB кабелем' },
+          { icon: '🍪', text: 'Игра Cookie Clicker (установлена на устройстве)' },
+          { icon: '🔧', text: 'Режим разработчика + Отладка по USB включены' },
+          { icon: '💻', text: 'Компьютер с Node.js 18+ и Android SDK' },
         ]}
       />
+
+      <div className="bg-blue-900/20 border border-blue-700/40 rounded-xl p-5">
+        <h4 className="font-semibold text-blue-300 mb-2 flex items-center gap-2">
+          <span>📱</span> Как включить отладку по USB
+        </h4>
+        <ol className="text-gray-400 text-sm space-y-2 list-decimal list-inside">
+          <li>Настройки → О телефоне → 7 раз тапнуть на "Номер сборки"</li>
+          <li>Появится "Режим разработчика"</li>
+          <li>Настройки → Система → Для разработчиков</li>
+          <li>Включить "Отладка по USB"</li>
+          <li>Подключить USB кабель к компьютеру</li>
+          <li>На телефоне разрешить отладку (появится диалог)</li>
+        </ol>
+      </div>
 
       <div className="bg-amber-900/20 border border-amber-700/40 rounded-xl p-5">
         <h4 className="font-semibold text-amber-300 mb-2 flex items-center gap-2">
-          <span>⚠️</span> Как узнать appPackage и appActivity?
+          <span>🍪</span> Package name игры Cookie Clicker
         </h4>
+        <p className="text-gray-400 text-sm mb-3">
+          Обычно это <code className="bg-gray-800 px-2 py-0.5 rounded text-amber-400">com.optcookie.CookieClicker</code>
+        </p>
+        <p className="text-gray-400 text-sm">
+          Узнать точно можно командой:
+        </p>
         <CodeBlock
-          code={`# Запустить приложение на устройстве, затем:
-adb shell dumpsys activity | grep "mResumedActivity"
+          code={`# Найти package name игры
+adb shell pm list packages | grep cookie
 
-# Результат:
-# mResumedActivity: ActivityRecord {abc} com.example.myapp/.MainActivity
-#                   ^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^
-#                   appPackage           appActivity
-
-# Или из APK файла:
-aapt dump badging my-app.apk | grep "package:"
-aapt dump badging my-app.apk | grep "launchable-activity"`}
+# Или если игра открыта:
+adb shell dumpsys activity | grep "mResumedActivity"`}
         />
       </div>
-
-      <InfoCard
-        title="Инициализация проекта"
-        items={[
-          { icon: '📁', text: 'mkdir android-tests && cd android-tests' },
-          { icon: '📦', text: 'npm init -y' },
-          { icon: '📦', text: 'npm i -D @wdio/cli typescript ts-node' },
-          { icon: '📦', text: 'npm i -D @wdio/local-runner @wdio/mocha-framework' },
-          { icon: '📦', text: 'npm i -D appium appium-uiautomator2-driver' },
-          { icon: '⚙️', text: 'npx wdio config (выбрать mocha, spec reporter)' },
-        ]}
-      />
     </div>
   );
 }
@@ -377,90 +358,50 @@ function ConfigSection() {
   return (
     <div className="space-y-6">
       <InfoCard
-        title="Desired Capabilities — ключевые параметры"
+        title="Ключевые параметры для вашего устройства"
         items={[
-          { icon: '📱', text: 'deviceName — имя эмулятора (adb devices)' },
-          { icon: '📦', text: 'app — путь к APK файлу' },
-          { icon: '🏷️', text: 'appPackage — package name приложения' },
-          { icon: '🎯', text: 'appActivity — activity для запуска' },
-          { icon: '✅', text: 'autoGrantPermissions — авто-разрешения' },
-          { icon: '🔄', text: 'noReset — не сбрасывать данные приложения' },
+          { icon: '📱', text: 'deviceName — модель телефона (adb shell getprop ro.product.model)' },
+          { icon: '🔢', text: 'udid — серийный номер (adb devices)' },
+          { icon: '🍪', text: 'appPackage — com.optcookie.CookieClicker' },
+          { icon: '🎯', text: 'appActivity — .MainActivity (или узнать через dumpsys)' },
+          { icon: '✅', text: 'noReset: true — не сбрасывать прогресс игры' },
         ]}
       />
 
-      <div className="bg-blue-900/20 border border-blue-700/40 rounded-xl p-5">
-        <h4 className="font-semibold text-blue-300 mb-2 flex items-center gap-2">
-          <span>💡</span> Как найти deviceName?
+      <div className="bg-green-900/20 border border-green-700/40 rounded-xl p-5">
+        <h4 className="font-semibold text-green-300 mb-2 flex items-center gap-2">
+          <span>💡</span> Как узнать appActivity?
         </h4>
         <CodeBlock
-          code={`# Список подключённых устройств
-adb devices
+          code={`# Открыть Cookie Clicker на телефоне, затем:
+adb shell dumpsys activity | grep "mResumedActivity"
 
-# Результат:
-# List of devices attached
-# emulator-5554    device     ← это deviceName для эмулятора
-# ABCDEF123456     device     ← это deviceName для реального устройства
-
-# Для эмулятора в Android Studio:
-# Pixel_6_API_34, Medium_Phone_API_34, и т.д.`}
+# Результат будет примерно такой:
+# mResumedActivity: ActivityRecord {abc} com.optcookie.CookieClicker/.MainActivity
+#                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#                   appPackage                              appActivity`}
         />
       </div>
-    </div>
-  );
-}
 
-function PageObjectSection() {
-  return (
-    <div className="space-y-6">
-      <InfoCard
-        title="Почему Page Object?"
-        items={[
-          { icon: '🏛️', text: 'Локаторы в одном месте — легко менять' },
-          { icon: '🔁', text: 'Переиспользование методов между тестами' },
-          { icon: '📖', text: 'Тесты читаются как бизнес-логика' },
-          { icon: '🛡️', text: 'Встроенные ожидания — меньше flaky тестов' },
-        ]}
-      />
-
-      <div className="bg-purple-900/20 border border-purple-700/40 rounded-xl p-5">
-        <h4 className="font-semibold text-purple-300 mb-3">🎯 Способы найти элемент на Android</h4>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <LocatorCard
-            priority={1}
-            name="Accessibility ID"
-            code="~my-button"
-            desc="contentDescription в XML"
-            recommended
-          />
-          <LocatorCard
-            priority={2}
-            name="Android UIAutomator"
-            code='android=new UiSelector().resourceId("com.app:id/btn")'
-            desc="По resource-id"
-          />
-          <LocatorCard
-            priority={3}
-            name="ID"
-            code="com.example.myapp:id/username"
-            desc="Прямой resource-id"
-          />
-          <LocatorCard
-            priority={4}
-            name="XPath"
-            code='//android.widget.Button[@text="Войти"]'
-            desc="Хрупкий, избегать"
-          />
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+        <h4 className="font-semibold text-white mb-3">📝 Замените в конфиге:</h4>
+        <div className="space-y-2 text-sm">
+          <div className="flex items-start gap-2">
+            <code className="text-orange-400 shrink-0">SM-A525F</code>
+            <span className="text-gray-500">→</span>
+            <span className="text-gray-400">имя вашего устройства</span>
+          </div>
+          <div className="flex items-start gap-2">
+            <code className="text-orange-400 shrink-0">XXXXXXXX</code>
+            <span className="text-gray-500">→</span>
+            <span className="text-gray-400">серийный номер из adb devices</span>
+          </div>
+          <div className="flex items-start gap-2">
+            <code className="text-orange-400 shrink-0">.MainActivity</code>
+            <span className="text-gray-500">→</span>
+            <span className="text-gray-400">activity из dumpsys (если отличается)</span>
+          </div>
         </div>
-      </div>
-
-      <div className="bg-amber-900/20 border border-amber-700/40 rounded-xl p-5">
-        <h4 className="font-semibold text-amber-300 mb-2 flex items-center gap-2">
-          <span>🔍</span> Appium Inspector — для поиска локаторов
-        </h4>
-        <p className="text-gray-400 text-sm">
-          Скачайте <a href="https://github.com/appium/appium-inspector" className="text-purple-400 underline" target="_blank" rel="noreferrer">Appium Inspector</a> — 
-          визуальный инструмент для просмотра дерева элементов и генерации локаторов.
-        </p>
       </div>
     </div>
   );
@@ -470,32 +411,60 @@ function TestSection() {
   return (
     <div className="space-y-6">
       <InfoCard
-        title="Что проверяют эти тесты"
+        title="Что делает тест"
         items={[
-          { icon: '✅', text: 'Вход с валидными данными → попадаем на главный экран' },
-          { icon: '❌', text: 'Неверный пароль → сообщение об ошибке' },
-          { icon: '❌', text: 'Пустые поля → валидация формы' },
-          { icon: '🔒', text: '5 неверных попыток → блокировка аккаунта' },
+          { icon: '1️⃣', text: 'Подключается к Appium серверу' },
+          { icon: '2️⃣', text: 'Запускает Cookie Clicker' },
+          { icon: '3️⃣', text: 'Получает размеры экрана' },
+          { icon: '4️⃣', text: 'Вычисляет центр экрана (width/2, height/2)' },
+          { icon: '5️⃣', text: 'Кликает в центр 100 раз (или бесконечно)' },
         ]}
       />
 
+      <div className="bg-purple-900/20 border border-purple-700/40 rounded-xl p-5">
+        <h4 className="font-semibold text-purple-300 mb-3">🎯 Как работает клик в центр</h4>
+        <div className="bg-gray-900/60 rounded-lg p-4">
+          <div className="text-center text-sm text-gray-400 mb-3">
+            Схема экрана телефона:
+          </div>
+          <div className="relative w-48 h-80 mx-auto border-2 border-gray-600 rounded-lg bg-gray-800/50">
+            {/* Grid lines */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-px h-full bg-gray-700" />
+            </div>
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full h-px bg-gray-700" />
+            </div>
+            {/* Center point */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+              <div className="w-4 h-4 bg-orange-500 rounded-full animate-pulse shadow-lg shadow-orange-500/50" />
+            </div>
+            {/* Labels */}
+            <div className="absolute top-2 left-2 text-xs text-gray-500">0,0</div>
+            <div className="absolute bottom-2 right-2 text-xs text-gray-500">W,H</div>
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 mt-6 text-xs text-orange-400 whitespace-nowrap">
+              (W/2, H/2)
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
-        <h4 className="font-semibold text-white mb-3">📐 Структура теста (AAA)</h4>
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-            <div className="text-2xl mb-1">🎬</div>
-            <div className="text-sm font-semibold text-blue-400">Arrange</div>
-            <div className="text-xs text-gray-500 mt-1">Подготовка данных</div>
+        <h4 className="font-semibold text-white mb-3">⚡ Два режима теста</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-gray-900/50 rounded-lg p-4">
+            <div className="text-sm font-semibold text-blue-400 mb-2">🎯 Тест 1: 100 кликов</div>
+            <p className="text-xs text-gray-500">
+              Кликает 100 раз с паузой 100мс между кликами.
+              Подходит для проверки работоспособности.
+            </p>
           </div>
-          <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-            <div className="text-2xl mb-1">⚡</div>
-            <div className="text-sm font-semibold text-yellow-400">Act</div>
-            <div className="text-xs text-gray-500 mt-1">Выполняем действие</div>
-          </div>
-          <div className="bg-gray-900/50 rounded-lg p-3 text-center">
-            <div className="text-2xl mb-1">✅</div>
-            <div className="text-sm font-semibold text-green-400">Assert</div>
-            <div className="text-xs text-gray-500 mt-1">Проверяем результат</div>
+          <div className="bg-gray-900/50 rounded-lg p-4">
+            <div className="text-sm font-semibold text-green-400 mb-2">🚀 Тест 2: Бесконечный</div>
+            <p className="text-xs text-gray-500">
+              Кликает бесконечно с паузой 50мс (20 кликов/сек).
+              Остановить: Ctrl+C
+            </p>
           </div>
         </div>
       </div>
@@ -507,13 +476,13 @@ function RunSection() {
   return (
     <div className="space-y-6">
       <InfoCard
-        title="Пошаговый запуск"
+        title="Порядок запуска"
         items={[
-          { icon: '1️⃣', text: 'Запустить эмулятор (Android Studio → Device Manager)' },
+          { icon: '1️⃣', text: 'Подключить телефон по USB, проверить: adb devices' },
           { icon: '2️⃣', text: 'Запустить Appium сервер: appium' },
-          { icon: '3️⃣', text: 'Положить APK в папку ./apps/' },
-          { icon: '4️⃣', text: 'Проверить подключение: adb devices' },
-          { icon: '5️⃣', text: 'Запустить тесты: npx wdio run ./wdio.conf.ts' },
+          { icon: '3️⃣', text: 'Открыть Cookie Clicker на телефоне (или тест откроет сам)' },
+          { icon: '4️⃣', text: 'Запустить тест: npx wdio run ./wdio.conf.ts' },
+          { icon: '5️⃣', text: 'Смотреть как бот кликает в центре экрана 🍪' },
         ]}
       />
 
@@ -523,41 +492,41 @@ function RunSection() {
         </h4>
         <div className="space-y-3">
           <CommandBlock
+            label="Запустить Appium сервер"
+            command="appium"
+          />
+          <CommandBlock
+            label="Запустить тест (100 кликов)"
+            command="npx wdio run ./wdio.conf.ts --mochaOpts.grep '100 раз'"
+          />
+          <CommandBlock
+            label="Запустить бесконечный кликер"
+            command="npx wdio run ./wdio.conf.ts --mochaOpts.grep 'бесконечно'"
+          />
+          <CommandBlock
             label="Запустить все тесты"
             command="npx wdio run ./wdio.conf.ts"
-          />
-          <CommandBlock
-            label="Только тесты авторизации"
-            command="npx wdio run ./wdio.conf.ts --spec tests/login.spec.ts"
-          />
-          <CommandBlock
-            label="Только один тест (по имени)"
-            command='npx wdio run ./wdio.conf.ts --mochaOpts.grep "должен войти"'
-          />
-          <CommandBlock
-            label="Параллельно на 2 устройствах"
-            command="npx wdio run ./wdio.conf.ts --maxInstances 2"
           />
         </div>
       </div>
 
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
-        <h4 className="font-semibold text-white mb-3">🐛 Отладка</h4>
+        <h4 className="font-semibold text-white mb-3">🐛 Если что-то не работает</h4>
         <div className="space-y-2 text-sm">
-          <DebugTip command="adb logcat" desc="Логи устройства в реальном времени" />
-          <DebugTip command="adb shell dumpsys activity" desc="Текущая активность" />
-          <DebugTip command="adb shell pm list packages" desc="Список установленных пакетов" />
-          <DebugTip command="adb install app.apk" desc="Установить APK вручную" />
+          <DebugTip command="adb devices" desc="Устройство должно быть в списке" />
+          <DebugTip command="adb shell input tap 500 1000" desc="Тестовый клик (проверяет что adb работает)" />
+          <DebugTip command="adb shell wm size" desc="Узнать реальный размер экрана" />
           <DebugTip command="appium --log-level debug" desc="Подробные логи Appium" />
+          <DebugTip command="adb logcat" desc="Логи Android в реальном времени" />
         </div>
       </div>
 
-      <div className="bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-700/40 rounded-xl p-6">
-        <h4 className="font-semibold text-green-300 mb-3">🎉 Готово!</h4>
+      <div className="bg-gradient-to-r from-orange-900/30 to-amber-900/30 border border-orange-700/40 rounded-xl p-6">
+        <h4 className="font-semibold text-orange-300 mb-3">🎉 Готово!</h4>
         <p className="text-gray-300 text-sm leading-relaxed">
-          Теперь у вас есть рабочий автотест для Android приложения. 
-          Следующие шаги: добавить больше Page Objects, подключить Allure отчёты, 
-          настроить CI/CD (GitHub Actions / Jenkins) для автозапуска.
+          Теперь у вас есть бот для Cookie Clicker! 
+          Он кликает в центр экрана на реальном устройстве.
+          Можно менять количество кликов, скорость, или добавить рандомизацию координат.
         </p>
       </div>
     </div>
@@ -578,22 +547,6 @@ function InfoCard({ title, items }: { title: string; items: { icon: string; text
           </li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-function LocatorCard({ priority, name, code, desc, recommended }: {
-  priority: number; name: string; code: string; desc: string; recommended?: boolean;
-}) {
-  return (
-    <div className={`rounded-lg p-3 ${recommended ? 'bg-green-900/30 border border-green-700/40' : 'bg-gray-900/50 border border-gray-800'}`}>
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-xs font-bold text-gray-500">#{priority}</span>
-        <span className="text-sm font-semibold text-white">{name}</span>
-        {recommended && <span className="text-xs text-green-400">⭐</span>}
-      </div>
-      <code className="text-xs text-purple-300 block mb-1 break-all">{code}</code>
-      <p className="text-xs text-gray-500">{desc}</p>
     </div>
   );
 }
@@ -631,7 +584,7 @@ function DebugTip({ command, desc }: { command: string; desc: string }) {
 
 function CodeBlock({ code }: { code: string }) {
   return (
-    <div className="bg-gray-900/60 rounded-lg p-4 overflow-x-auto">
+    <div className="bg-gray-900/60 rounded-lg p-4 overflow-x-auto mt-2">
       <pre className="text-xs text-gray-300 font-mono leading-relaxed">
         {code}
       </pre>
@@ -660,7 +613,7 @@ function highlightBash(line: string) {
   return (
     <>
       {parts.map((part, i) => {
-        if (i === 0 && ['npm', 'appium', 'adb', 'npx', 'aapt', 'mkdir', 'cd'].includes(part)) {
+        if (i === 0 && ['npm', 'appium', 'adb', 'npx', 'mkdir', 'cd'].includes(part)) {
           return <span key={i} className="text-green-400">{part}</span>;
         }
         if (part.startsWith('-') || part.startsWith('--')) {
@@ -673,19 +626,11 @@ function highlightBash(line: string) {
 }
 
 function highlightTS(line: string) {
-  const keywords = /\b(import|from|export|default|const|let|var|async|await|return|class|private|get|new|if|else|for|describe|it|before|beforeEach|expect|Promise)\b/g;
-  const types = /\b(string|boolean|number|void|Promise|ChainablePromiseElement)\b/g;
   const strings = /(['"`])(?:(?=(\\?))\2.)*?\1/g;
-
-  // Simple approach: split by strings first, then highlight keywords
-  const segments: (string | { text: string; cls: string })[] = [];
-  let remaining = line;
+  const stringMatches: { start: number; end: number; text: string }[] = [];
   let match;
 
-  // Find all strings
-  const stringMatches: { start: number; end: number; text: string }[] = [];
-  const strRegex = /(['"`])(?:(?=(\\?))\2.)*?\1/g;
-  while ((match = strRegex.exec(line)) !== null) {
+  while ((match = strings.exec(line)) !== null) {
     stringMatches.push({ start: match.index, end: match.index + match[0].length, text: match[0] });
   }
 
@@ -712,7 +657,7 @@ function highlightTS(line: string) {
 }
 
 function highlightKeywords(text: string) {
-  const keywords = ['import', 'from', 'export', 'default', 'const', 'let', 'var', 'async', 'await', 'return', 'class', 'private', 'get', 'new', 'if', 'else', 'for', 'describe', 'it', 'before', 'beforeEach', 'expect'];
+  const keywords = ['import', 'from', 'export', 'default', 'const', 'let', 'var', 'async', 'await', 'return', 'class', 'private', 'get', 'new', 'if', 'else', 'for', 'describe', 'it', 'before', 'beforeEach', 'expect', 'while', 'true', 'false'];
   const regex = new RegExp(`\\b(${keywords.join('|')})\\b`, 'g');
   const parts = text.split(regex);
 
@@ -722,7 +667,6 @@ function highlightKeywords(text: string) {
         if (keywords.includes(part)) {
           return <span key={i} className="text-purple-400">{part}</span>;
         }
-        // numbers
         if (/^\d[\d_]*$/.test(part)) {
           return <span key={i} className="text-orange-400">{part}</span>;
         }
